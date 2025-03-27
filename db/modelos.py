@@ -10,7 +10,7 @@ class Clientes(SQLModel, table=True):
     nombre: str
     apellido: str
 
-class Pedidos(SQLModel, table=True):
+class Pedidos(SQLModel, table=True): 
     id: str = Field(default=str(uuid4()), primary_key=True)
     create_at: datetime = Field(default=datetime.now())
     update_at: datetime = Field(default_factory=datetime.now)
