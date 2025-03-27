@@ -4,8 +4,8 @@ verify_ssl = true
 name = "pypi"
 
 [packages]
-sqlmodel = "*"
 fastapi = {extras = ["standard"], version = "*"}
+sqlmodel = "*"
 
 [dev-packages]
 
