@@ -1,73 +1,49 @@
 import asyncio
 
-# funcion que inicia la noche
 async def iniciar_noche(ctx, bot, partida):
-    await ctx.send("🌙 La noche ha comenzado. Todos cierren los ojos...")
+    # se avisa que empezo la noche 
+    await ctx.send("🌙 La noche ha caído. La mafia decide a quién eliminar...")
 
-    # filtra los jugadores que tienen el rol de mafioso
+    # filtra los jugadores aue son mafiosos
     mafiosos = [j for j, r in partida["jugadores"].items() if r == "Mafioso"]
+
+    # Si no hay mafiosos (por ejemplo, fueron eliminados), se salta la noche
     if not mafiosos:
-        await ctx.send("⚠️ No hay mafiosos en esta partida.")
+        await ctx.send("No hay mafiosos. Se salta la fase de noche.")
         return
-    
-    # canal privado de mafiosos
-    canal_mafia = partida.get("canal_mafia")
-    if canal_mafia:
-        await canal_mafia.send("🔪 Es la hora de decidir a quién eliminar. Un mafioso debe escribir `!matar @jugador`.")
-    
-    # función que verifica si el mensaje es de un mafioso
+
+    # Se muestra una lista de jugadores la cual los mafiosos tienen que matar
+    jugadores_vivos = [j.display_name for j in partida["jugadores"] if partida["jugadores"][j] != "Mafioso"]
+    mensaje_lista = "👥 Jugadores vivos que NO son mafiosos:\n" + "\n".join(f"- {nombre}" for nombre in jugadores_vivos)
+
+    # la lista de jugadores se manda al canal privado de los mafiosos
+    if partida.get("canal_mafia"):
+        await partida["canal_mafia"].send(mensaje_lista)
+
+    # la función verifica que el mensaje es de un mafioso y tenga el formato correcto --> !matar @jugador
     def mensaje_mafioso(msg):
-        return msg.author in mafiosos and msg.content.startswith("!matar ")
-    
+        return msg.author in mafiosos and msg.content.startswith("!matar ") and msg.mentions
+
     try:
-        # se espera 60 segundos a que un mafioso elija una víctima
-        msg = await bot.wait_for("message", mensaje_mafioso=mensaje_mafioso, timeout=60)
-        victima_mencion = msg.mentions[0] if msg.mentions else None
-
-        # se valida si el jugador es valido o no
-        if not victima_mencion or victima_mencion not in partida["jugadores"]:
-            await canal_mafia.send("⚠️ No encontré ese jugador. Intenta de nuevo la próxima noche.")
-            return
-
-        # si es un jugador de la partida se elimina de la partida
-        del partida["jugadores"][victima_mencion]
-        await ctx.send(f"🔪 El sol ha salido. La noche ha terminado. **{victima_mencion.display_name}** fue eliminado. 🚨")
-        
-        # se muestra la lista de jugadores restantes
-        jugadores_restantes = ", ".join(j.display_name for j in partida["jugadores"])
-        await ctx.send(f"👥 Jugadores restantes: {jugadores_restantes}")
-
-        # se verifica si la partida ya tiene un ganador
-        await verificar_ganador(ctx, partida)
-    
+        # el tiempo es de un minuto o 60 segundos que tiene el mafioso para matar sino lo hace en ese tiempo pasa a la fase dia
+        msg = await bot.wait_for("message", check=mensaje_mafioso, timeout=60)
+        victima = msg.mentions[0]  # El jugador mencionado es la víctima
     except asyncio.TimeoutError:
-        # si no mataron a nadie en el tiempo límite, la noche termina sin víctimas
-        await canal_mafia.send("⏳ No eligieron a nadie. Nadie ha muerto esta noche.")
-        await ctx.send("🌞 El sol ha salido. Nadie murió esta noche.")
+        # si se acaba el tiempo y la partida sigue, se avisa que no mataron a nadie
+        if not partida["activa"]:
+            return
+        await ctx.send("⏳ La mafia no ha elegido a nadie esta noche.")
+        return
 
-# función que revisa si la partida ya tiene un ganador
-async def verificar_ganador(ctx, partida):
-    mafiosos = sum(1 for rol in partida["jugadores"].values() if rol == "Mafioso")
-    ciudadanos = sum(1 for rol in partida["jugadores"].values() if rol != "Mafioso")
+    # se verifica si la partida sigue activa (osea si terminó justo después de elegir)
+    if not partida["activa"]:
+        return
 
-    # si no hay mafiosos los ciudadanos ganas
-    if mafiosos == 0:
-        await ctx.send("🎉 ¡Los ciudadanos han ganado la partida!")
-        await finalizar_partida(ctx, partida)
-    # en caso de haber quedado los mafiosos ellos ganan
-    elif mafiosos >= ciudadanos:
-        await ctx.send("💀 ¡La mafia ha tomado el control! La mafia gana.")
-        await finalizar_partida(ctx, partida)
+    # se verifica que la víctima siga viva antes de intentar eliminarla
+    if victima not in partida["jugadores"]:
+        await ctx.send(f"⚠️ {victima.display_name} no está en la partida.")
+        return
 
-# función para reiniciar los valores de la partida cuando alguien gana
-async def finalizar_partida(ctx, partida):
-    partida["activa"] = False
-    partida["jugadores"].clear()
-    partida["max_jugadores"] = 0
-    
-    # se elimina el canal privado de la mafia si existía
-    if partida["canal_mafia"]:
-        await partida["canal_mafia"].delete()
-        partida["canal_mafia"] = None
-    
-    await ctx.send("🏁 La partida ha finalizado")
+    # se elimina a la victima y se muestra cual fue su rol
+    rol_victima = partida["jugadores"].pop(victima)
+    await ctx.send(f"💀 {victima.display_name} ha sido eliminado durante la noche. Era un **{rol_victima}**.")
