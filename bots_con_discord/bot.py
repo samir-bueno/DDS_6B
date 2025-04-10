@@ -4,55 +4,54 @@ import random
 from discord.ext import commands
 from dotenv import load_dotenv
 from noche import iniciar_noche
+from dia import iniciar_dia, verificar_ganador
 
-# Carga las variables de entorno
+# cargamos el token del bot desde el archivo .env
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
 
-# Configurar permisos (intents) para el bot
+# activamos los permisos necesarios para que el bot pueda leer mensajes, ver miembros, etc
 intents = discord.Intents.default()
 intents.message_content = True
 intents.guilds = True
 intents.members = True
 
-# Crear el bot incluyendo el prefijo !
+# crea el bot con el prefijo "!"
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# Diccionario que representa el estado de la partida
+# se crea un diccionario para que guarda los valores principales de la partida actual, como si esta activa, jugadores, etc
 partida = {
-    "activa": False,  # indica si hla partida esta activa o no
-    "jugadores": {},  # es un diccionario el cual almacena a los jugadores
-    "max_jugadores": 0,  # el numero máximo de jugadores permitidos en la partida
-    "canal_mafia": None  # canal privado para los mafiosos
+    "activa": False,
+    "jugadores": {},
+    "max_jugadores": 0,
+    "canal_mafia": None
 }
 
-# este evento nos dice si el bot esta conectado
+# cuando el bot se conecta, lo muestra en consola
 @bot.event
 async def on_ready():
     print(f'✅ Bot conectado como {bot.user}')
 
-# este Comando crea una partida con !mafia_crear <cantidad_jugadores> 
+# este comando se usa para crear una nueva partida
 @bot.command()
 async def mafia_crear(ctx, cantidad: int):
     if partida["activa"]:
         await ctx.send("⚠️ Ya hay una partida en curso.")
         return
 
-    # actualiza la partida con los nuevos valores
     partida.update({
         "activa": True,
         "jugadores": {},
         "max_jugadores": cantidad,
         "canal_mafia": None
     })
-    
-    await ctx.send(f"🎭 **Se ha creado una partida de Mafia para {cantidad} jugadores!**\nUsa `!mafia_unirme` para participar.")
+    await ctx.send(f"🎭 Se ha creado una partida para {cantidad} jugadores! Usa `!mafia_unirme` para participar.")
 
-# este Comando sirve para que los jugadores se unan a la partida con !mafia_unirme
+# comando para que un jugador se una a la partida
 @bot.command()
 async def mafia_unirme(ctx):
     if not partida["activa"]:
-        await ctx.send("⚠️ No hay ninguna partida creada. Usa `!mafia_crear <número>` para iniciar una.")
+        await ctx.send("⚠️ No hay ninguna partida creada.")
         return
 
     if ctx.author in partida["jugadores"]:
@@ -63,72 +62,83 @@ async def mafia_unirme(ctx):
         await ctx.send("⚠️ La partida ya está llena.")
         return
 
-    # se agregan los jugadores a la partida
     partida["jugadores"][ctx.author] = None
     await ctx.send(f"✅ {ctx.author.display_name} se ha unido. Jugadores actuales: {len(partida['jugadores'])}/{partida['max_jugadores']}")
 
-    # cuando la partida se llena se asignan los roles
     if len(partida["jugadores"]) == partida["max_jugadores"]:
         await asignar_roles(ctx)
 
-# esta funcion asigna los roles automaticamente a los jugadores que estan en la partida
+# esta función asigna los roles al azar y avisa a cada jugador por el chat privado
 async def asignar_roles(ctx):
-    roles_disponibles = ["Mafioso", "Ciudadano", "Doctor", "Detective"]
     jugadores = list(partida["jugadores"].keys())
-    
-    random.shuffle(jugadores)  # mezcla los jugadores para asignar roles aleatoriamente
-    roles_asignados = random.choices(roles_disponibles, k=len(jugadores))
-    
-    for jugador, rol in zip(jugadores, roles_asignados):
+    num_jugadores = len(jugadores)
+
+    # se define cuántos roles hay según la cantidad total
+    num_mafiosos = max(1, num_jugadores // 3)
+    num_doctores = 1 if num_jugadores >= 5 else 0
+    num_detectives = 1 if num_jugadores >= 6 else 0
+    num_ciudadanos = num_jugadores - (num_mafiosos + num_doctores + num_detectives)
+
+    # se mezclan los roles
+    roles = (["Mafioso"] * num_mafiosos + ["Doctor"] * num_doctores +
+             ["Detective"] * num_detectives + ["Ciudadano"] * num_ciudadanos)
+    random.shuffle(roles)
+
+    # se asignan los roles y se mandan por el chat privado
+    for jugador, rol in zip(jugadores, roles):
         partida["jugadores"][jugador] = rol
         try:
             await jugador.send(f"🤫 Tu rol en la partida es **{rol}**.")
         except discord.Forbidden:
-            await ctx.send(f"⚠️ No puedo enviarle mensaje privado a {jugador.display_name}. Activa los mensajes privados.")
-    
-    # Crear el canal privado para la mafia
-    await crear_canal_mafia(ctx)
-    
-    await ctx.send("🔒 Todos los roles han sido asignados en privado. ¡Que comience la partida! 🎭")
-    await iniciar_noche(ctx, bot, partida)
+            await ctx.send(f"⚠️ No puedo enviar mensaje privado a {jugador.display_name}.")
 
-# Esta función crea un canal privado solo para los mafiosos
+    # se crea canal privado para los mafiosos y comienza la partida
+    await crear_canal_mafia(ctx)
+    await ctx.send("🔒 Todos los roles han sido asignados. ¡Comienza la partida!")
+    await turno_noche_dia(ctx)
+
+# crea un canal privado para que los mafiosos se comuniquen aunque tambien incluye al admin del servidor sin importar su rol
 async def crear_canal_mafia(ctx):
     mafiosos = [j for j, r in partida["jugadores"].items() if r == "Mafioso"]
     guild = ctx.guild
-    overwrites = {
-        guild.default_role: discord.PermissionOverwrite(read_messages=False),  # bloquea el acceso a todos los demás
-    }
-    
+    overwrites = {guild.default_role: discord.PermissionOverwrite(read_messages=False)}
+
     for mafioso in mafiosos:
-        overwrites[mafioso] = discord.PermissionOverwrite(read_messages=True, send_messages=True)  # permite a los mafiosos leer y escribir
-    
-    # Si existe el canal de la mafia, se elimina cuando la partida acabe
+        overwrites[mafioso] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+
+    # Si ya había un canal, lo borra primero
     if partida["canal_mafia"]:
         await partida["canal_mafia"].delete()
-    
+
     canal_mafia = await guild.create_text_channel("canal-mafia", overwrites=overwrites)
     partida["canal_mafia"] = canal_mafia
-    await canal_mafia.send("Bienvenidos, mafiosos. Aquí pueden hablar en secreto. Usen `!matar @jugador` para eliminar a alguien.")
+    await canal_mafia.send("Bienvenidos, mafiosos. Usen `!matar @jugador` para eliminar a alguien.")
 
-# este Comando permite acabar la partida, ademas de limpiar los datos
+# este Comando se usa para cerrar la partida en cualquier momento
 @bot.command()
 async def mafia_terminar(ctx):
     if not partida["activa"]:
         await ctx.send("No hay una partida en curso.")
         return
-    
-    # reinicia los valores de la partida por los que habia antes
-    partida["activa"] = False
-    partida["jugadores"].clear()
-    partida["max_jugadores"] = 0
-    
-    # elimina el canal de la mafia si existe
+
     if partida["canal_mafia"]:
         await partida["canal_mafia"].delete()
-        partida["canal_mafia"] = None
-    
-    await ctx.send("❌ La partida ha sido terminada")
 
-# iniciar el bot
-bot.run(TOKEN)
+    partida.update({"activa": False, "jugadores": {}, "max_jugadores": 0, "canal_mafia": None})
+    await ctx.send("❌ La partida ha sido terminada.")
+
+# este es el bucle principal para pasar de noche a dia y si sigue la partida se repite este ciclo hasta que alguien gane
+async def turno_noche_dia(ctx):
+    while partida["activa"]:
+        await iniciar_noche(ctx, bot, partida)
+        if not partida["activa"] or await verificar_ganador(ctx, partida):
+            return
+        await iniciar_dia(ctx, partida)
+        if not partida["activa"] or await verificar_ganador(ctx, partida):
+            return
+
+# se arranca el bot si se encuentra el token
+if TOKEN:
+    bot.run(TOKEN)
+else:
+    print("ERROR: No se encontró un token de bot en el archivo .env")
